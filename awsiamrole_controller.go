@@ -178,7 +178,7 @@ func (c *AWSIAMRoleController) refresh() error {
 				return err
 			}
 			if !allowedInNamespace {
-				log.Errorf("IAM Role %s cannot be assumed in %s namespace", role, c.namespace, err)
+				log.Errorf("IAM Role %s cannot be assumed in %s namespace: %v", role, c.namespace, err)
 				refreshCreds = false
 				continue
 			}

@@ -161,7 +161,7 @@ func TestRefreshAWSIAMRole(tt *testing.T) {
 				require.NoError(t, err)
 			}
 
-			controller := NewAWSIAMRoleController(client, 0, 15*time.Minute, tc.credsGetter, "default")
+			controller := NewAWSIAMRoleController(client, 0, 15*time.Minute, tc.credsGetter, "default", false)
 			err := controller.refresh()
 			require.NoError(t, err)
 
