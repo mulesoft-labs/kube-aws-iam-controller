@@ -27,14 +27,15 @@ const (
 
 var (
 	config struct {
-		Debug          bool
-		Interval       time.Duration
-		RefreshLimit   time.Duration
-		EventQueueSize int
-		BaseRoleARN    string
-		APIServer      *url.URL
-		Namespace      string
-		AssumeRole     string
+		Debug                 bool
+		Interval              time.Duration
+		RefreshLimit          time.Duration
+		EventQueueSize        int
+		BaseRoleARN           string
+		APIServer             *url.URL
+		Namespace             string
+		AssumeRole            string
+		NamespaceRestrictions bool
 	}
 )
 
@@ -52,6 +53,8 @@ func main() {
 		StringVar(&config.AssumeRole)
 	kingpin.Flag("namespace", "Limit the controller to a certain namespace.").
 		Default(v1.NamespaceAll).StringVar(&config.Namespace)
+	kingpin.Flag("namespace-restrictions", "Allow Namespaces to set annotations specifying a pattern of which IAM roles can be assumed using regex.").
+		BoolVar(&config.NamespaceRestrictions)
 	kingpin.Flag("apiserver", "API server url.").URLVar(&config.APIServer)
 	kingpin.Parse()
 
@@ -123,6 +126,7 @@ func main() {
 		config.RefreshLimit,
 		credsGetter,
 		config.Namespace,
+		config.NamespaceRestrictions,
 	)
 
 	go awsIAMRoleController.Run(ctx)

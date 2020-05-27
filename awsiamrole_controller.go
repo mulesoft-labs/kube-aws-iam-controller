@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 
 const (
 	awsIAMRoleGenerationKey = "awsiamrole-generation"
+
+	// AnnotationPermittedKey hold the name of the annotation for the regex expressing the
+	// roles that can be assumed by pods in that namespace.
+	AnnotationPermittedKey = "iam.amazonaws.com/permitted"
 )
 
 var (
@@ -31,23 +36,25 @@ var (
 // AWSIAMRoleController is a controller which lists AWSIAMRole resources and
 // create/update matching secrets with AWS IAM role credentials.
 type AWSIAMRoleController struct {
-	client       clientset.Interface
-	recorder     record.EventRecorder
-	interval     time.Duration
-	refreshLimit time.Duration
-	creds        CredentialsGetter
-	namespace    string
+	client                clientset.Interface
+	recorder              record.EventRecorder
+	interval              time.Duration
+	refreshLimit          time.Duration
+	creds                 CredentialsGetter
+	namespace             string
+	namespaceRestrictions bool
 }
 
 // NewSecretsController initializes a new AWSIAMRoleController.
-func NewAWSIAMRoleController(client clientset.Interface, interval, refreshLimit time.Duration, creds CredentialsGetter, namespace string) *AWSIAMRoleController {
+func NewAWSIAMRoleController(client clientset.Interface, interval, refreshLimit time.Duration, creds CredentialsGetter, namespace string, enableNamespaceRestrictions bool) *AWSIAMRoleController {
 	return &AWSIAMRoleController{
-		client:       client,
-		recorder:     recorder.CreateEventRecorder(client),
-		interval:     interval,
-		refreshLimit: refreshLimit,
-		creds:        creds,
-		namespace:    namespace,
+		client:                client,
+		recorder:              recorder.CreateEventRecorder(client),
+		interval:              interval,
+		refreshLimit:          refreshLimit,
+		creds:                 creds,
+		namespace:             namespace,
+		namespaceRestrictions: enableNamespaceRestrictions,
 	}
 }
 
@@ -152,16 +159,28 @@ func (c *AWSIAMRoleController) refresh() error {
 		// TODO: move to function
 		refreshCreds := false
 
-		expirary, ok := secret.Data[expireKey]
+		expiry, ok := secret.Data[expireKey]
 		if !ok {
 			refreshCreds = true
 		} else {
-			expire, err := time.Parse(time.RFC3339, string(expirary))
+			expire, err := time.Parse(time.RFC3339, string(expiry))
 			if err != nil {
-				log.Debugf("Failed to parse expirary time %s: %v", expirary, err)
+				log.Debugf("Failed to parse expiry time %s: %v", expiry, err)
 				refreshCreds = true
 			} else if time.Now().UTC().Add(c.refreshLimit).After(expire) {
 				refreshCreds = true
+			}
+		}
+
+		if c.namespaceRestrictions {
+			allowedInNamespace, err := c.isAllowedInNamespace(role)
+			if err != nil {
+				return err
+			}
+			if !allowedInNamespace {
+				log.Errorf("IAM Role %s cannot be assumed in %s namespace: %v", role, c.namespace, err)
+				refreshCreds = false
+				continue
 			}
 		}
 
@@ -307,7 +326,7 @@ func (c *AWSIAMRoleController) refresh() error {
 					c.recorder.Event(&awsIAMRole,
 						v1.EventTypeWarning,
 						"ReadSecretFailed",
-						fmt.Sprintf("Failed to parse expirary time '%s' from secret %s/%s: %v",
+						fmt.Sprintf("Failed to parse expiry time '%s' from secret %s/%s: %v",
 							string(secret.Data[expireKey]),
 							secret.Namespace,
 							secret.Name,
@@ -440,4 +459,33 @@ func getGeneration(secretData map[string][]byte) (int64, error) {
 		generation = i
 	}
 	return generation, nil
+}
+
+// isAllowedInNamespace returns true if the namespace allows the
+// assumption of the role using regex.
+// example annotation: iam.amazonaws.com/permitted: ".*"
+func (c *AWSIAMRoleController) isAllowedInNamespace(role string) (bool, error) {
+	ns, err := c.client.CoreV1().Namespaces().Get(c.namespace, metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+
+	if ns.Status.Phase != v1.NamespaceActive {
+		return false, nil
+	}
+
+	expression := ns.GetAnnotations()[AnnotationPermittedKey]
+	if expression == "" {
+		return false, nil
+	}
+
+	re, err := regexp.Compile(expression)
+	if err != nil {
+		return false, err
+	}
+
+	if !re.MatchString(role) {
+		return false, nil
+	}
+	return true, nil
 }
